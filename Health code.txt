@@ -1,0 +1,256 @@
+#include <OneWire.h>
+#include <DallasTemperature.h>
+#define ONE_WIRE_BUS 5
+OneWire oneWire(ONE_WIRE_BUS);
+DallasTemperature sensors(&oneWire);
+
+#define uS_TO_S_FACTOR 1000000  /* Conversion factor for micro seconds to seconds */
+#define TIME_TO_SLEEP  20        /* Time ESP32 will go to sleep (in seconds) */
+#define chk  12
+
+#define RXD2 16    //1 serial1=1,3
+#define TXD2 17    //2 serial2=16,17
+#define AVG_NUM 10    // number of iterations of the adc routine to average the adc readings
+#define adl 12
+#define MAX_STRING_LEN  52  //56
+#define MAX_INPUT 56
+
+uint64_t gap=15*1000000;
+unsigned long myChannelNumber = 1750055;
+const char * myWriteAPIKey = "9OXNEOH3XBC4XBTM";
+#include <WiFi.h> //    //For ESP32
+#include <WiFiUdp.h>
+#include <HTTPClient.h>
+
+// DEFINE HERE THE KNOWN NETWORKSc ccc
+const char* KNOWN_SSID[] = {"It hurts when IP", "Valkyrie", "VALKYRIE 0012"};
+const char* KNOWN_PASSWORD[] = {"BagadBilla69", "9226212543", "9226212544"};
+const int   KNOWN_SSID_COUNT = sizeof(KNOWN_SSID) / sizeof(KNOWN_SSID[0]); // number of known networks
+
+int status = WL_IDLE_STATUS;
+WiFiUDP ntpUDP;
+//NTPClient timeClient(ntpUDP);
+WiFiClient  client;
+HTTPClient http;  
+const char* server = "api.thingspeak.com";
+String poststr;
+int httpCode;
+String rt,v[5];
+float v1[5];
+#include <Wire.h>
+#include "MAX30100_PulseOximeter.h"
+
+#define REPORTING_PERIOD_MS     1000
+PulseOximeter pox;
+
+uint32_t tsLastReport = 0;
+
+boolean newData = false;
+
+// Callback (registered below) fired when a pulse is detected
+void onBeatDetected(){
+    Serial.print("..");
+}
+
+void setup(){
+Serial.begin(115200);
+pinMode(chk, OUTPUT);
+digitalWrite(chk, LOW);
+//Serial2.begin(9600, SERIAL_8N1, RXD2, TXD2);  //16,17
+  sensors.begin();
+  
+  boolean wifiFound = false;
+  int i, n;
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  delay(100);
+  Serial.println("Setup done");
+ // ----------------------------------------------------------------
+  // WiFi.scanNetworks will return the number of networks found
+  // ----------------------------------------------------------------
+  Serial.println(F("scan start"));
+  int nbVisibleNetworks = WiFi.scanNetworks();
+  Serial.println(F("scan done"));
+  if (nbVisibleNetworks == 0) {
+    Serial.println(F("no networks found. Reset to try again"));
+    while (true); // no need to go further, hang in there, will auto launch the Soft WDT reset
+  }
+
+  // ----------------------------------------------------------------
+  // if you arrive here at least some networks are visible
+  // ----------------------------------------------------------------
+  Serial.print(nbVisibleNetworks);
+  Serial.println(" network(s) found");
+
+  // ----------------------------------------------------------------
+  // check if we recognize one by comparing the visible networks
+  // one by one with our list of known networks
+  // ----------------------------------------------------------------
+  for (i = 0; i < nbVisibleNetworks; ++i) {
+    Serial.println(WiFi.SSID(i)); // Print current SSID
+    for (n = 0; n < KNOWN_SSID_COUNT; n++) { // walk through the list of known SSID and check for a match
+      if (strcmp(KNOWN_SSID[n], WiFi.SSID(i).c_str())) {
+        Serial.print(F("\tNot matching "));
+        Serial.println(KNOWN_SSID[n]);
+      } else { // we got a match
+        wifiFound = true;
+        break; // n is the network index we found
+      }
+    } // end for each known wifi SSID
+    if (wifiFound) break; // break from the "for each visible network" loop
+  } // end for each visible network
+
+  if (!wifiFound) {
+    Serial.println(F("no Known network identified. Reset to try again"));
+    Serial.print("Restarting...");
+    esp_restart();     
+//    while (true); // no need to go further, hang in there, will auto launch the Soft WDT reset
+  }
+
+  // ----------------------------------------------------------------
+  // if you arrive here you found 1 known SSID
+  // ----------------------------------------------------------------
+  Serial.print(F("\nConnecting to "));
+  Serial.println(KNOWN_SSID[n]);
+
+  // ----------------------------------------------------------------
+  // We try to connect to the WiFi network we found
+  // ----------------------------------------------------------------
+  WiFi.begin(KNOWN_SSID[n], KNOWN_PASSWORD[n]);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    int f=f+1;
+    Serial.print ( "." );
+    if(f>60){    
+          Serial.print("Restarting...");
+esp_restart();    
+    }
+    Serial.print(".");
+  }
+  Serial.println("");
+
+  // ----------------------------------------------------------------
+  // SUCCESS, you are connected to the known WiFi network
+  // ----------------------------------------------------------------
+  Serial.println(F("WiFi connected, your IP address is "));
+  Serial.println(WiFi.localIP());
+
+   
+    Serial.print("Initializing pulse oximeter..");
+     if (!pox.begin()) {
+        Serial.println("FAILED");
+        for(;;);
+    } else {
+        Serial.println("SUCCESS");
+    }
+
+    // The default current for the IR LED is 50mA and it could be changed
+    //   by uncommenting the following line. Check MAX30100_Registers.h for all the
+    //   available options.
+     pox.setIRLedCurrent(MAX30100_LED_CURR_7_6MA);
+
+    // Register a callback for the beat detection
+    pox.setOnBeatDetectedCallback(onBeatDetected);
+sensors.requestTemperatures(); // Send the command to get temperatures
+}
+
+int i=0;
+bool ul=false;
+void loop(){
+//pox.resume();  
+newData=false; 
+digitalWrite(chk, LOW);
+float t=millis();
+if(t>25000) esp_restart();  
+//Serial.print(t);
+
+pox.update();
+if ( millis() - tsLastReport > REPORTING_PERIOD_MS ){   //40 to 90
+ v1[0] =  read_adc(pox.getHeartRate());
+ v1[1] =  read_adc(pox.getSpO2());
+
+ //v1[2] =  read_adc( sensors.getTempCByIndex(0) );
+ if(sensors.getTempCByIndex(0)>1) 
+        v1[2] =  sensors.getTempCByIndex(0);
+ 
+if (v1[0]>10 and v1[1]>10 ) {
+  newData = true;
+
+ Serial.print(i);
+ Serial.print(" : ");
+  
+        Serial.print("Heart rate: ");
+        Serial.print(v1[0]);  //pox.getHeartRate());
+        Serial.print("bpm / SpO2: ");
+        Serial.print(v1[1]); //pox.getSpO2());
+        Serial.print(" %  ");
+        Serial.print("Tmp(C): ");
+        Serial.println(v1[2]); 
+}       
+        tsLastReport = millis();
+          i=i+1;
+         
+ if(i==25) i=0;
+ if(newData==true and i>=15 and i<20) {
+  digitalWrite(chk , HIGH);
+  upload();
+  digitalWrite(chk, LOW);
+ }
+newData=false;
+//   pox.update();
+    }
+
+}
+
+
+void upload(){
+String poststr="https://api.thingspeak.com/update?api_key=";
+poststr +=myWriteAPIKey;   
+poststr +="&field1="+String(v1[0],0);
+poststr +="&field2="+String(v1[1],0);
+poststr +="&field3="+String(v1[2],2);
+
+//Serial.println(poststr);
+
+
+ http.begin(poststr);
+ int  httpCode=http.GET();
+      if (httpCode > 0) { //Check for the returning code
+        String payload = http.getString();
+//        Serial.println(httpCode);
+//        Serial.println(payload);
+         Serial.println(poststr);
+         Serial.println("Updated-1");
+         poststr="";
+         newData=false;
+
+
+pox.shutdown();
+         
+esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
+esp_deep_sleep_start();        
+//   esp_restart();         
+      }
+    else {
+      Serial.println("Error on HTTP request");
+     esp_restart();    
+    }
+//    datax=0.0;
+//esp_deep_sleep(15000000); 
+//delay(15000);
+//newData = false;
+//exit;
+
+}
+
+float read_adc(float adc_parameter){
+  float sum = 0;
+  int sample ;
+  for (int i=0; i<AVG_NUM; i++)   { // loop through reading raw adc values AVG_NUM number of times  
+    sample = adc_parameter;    // read the input pin  
+    sum += sample;                        // store sum for averaging
+    delayMicroseconds(adl);              // pauses for 50 microseconds  
+  }
+  return(sum / AVG_NUM);                // divide sum by AVG_NUM to get average and return it
+}
